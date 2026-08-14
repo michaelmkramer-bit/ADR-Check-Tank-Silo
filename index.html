@@ -542,7 +542,6 @@
       const container = document.getElementById('questionsContainer');
       
       questionsList.forEach((q, index) => {
-        // Nach der 3. Frage (Index 2) den Info-Banner einfügen
         if (index === 3) {
           const infoDiv = document.createElement('div');
           infoDiv.className = 'info-banner';
@@ -550,8 +549,6 @@
           container.appendChild(infoDiv);
         }
 
-        // Die ersten 3 Fragen (Index 0, 1, 2) sind standardmäßig auf "Ja" vorausgewählt.
-        // Frage 4 (Index 3) und alle weiteren (Index >= 3) haben KEINE Vorauswahl.
         const isChecked = index < 3 ? 'checked' : '';
 
         const item = document.createElement('div');
@@ -645,7 +642,6 @@
       tbody.innerHTML = '';
 
       questionsList.forEach((q, index) => {
-        // Infospalte exakt nach Frage 3 (Index 3) im gedruckten Protokoll einfügen
         if (index === 3) {
           const infoRow = document.createElement('tr');
           infoRow.className = 'info-row';
@@ -688,17 +684,45 @@
           allowTaint: true
         });
 
-        const imageURI = canvas.toDataURL('image/jpeg', 1.0);
-        
         const cleanDeliveryNum = deliveryNum.replace(/[/\\?%*:|"<>]/g, '-').trim();
         const fileName = `${cleanDeliveryNum}.jpg`;
 
-        const link = document.createElement('a');
-        link.download = fileName;
-        link.href = imageURI;
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
+        // Optimierte iOS- / Safari-kompatible Speichermethode via Blob
+        canvas.toBlob(async function(blob) {
+          if (!blob) {
+            alert('Fehler bei der Bilderstellung.');
+            return;
+          }
+
+          const file = new File([blob], fileName, { type: 'image/jpeg' });
+
+          // 1. iOS / Web Share API (native Teilen-Funktion auf iPhones/iPads)
+          if (navigator.canShare && navigator.canShare({ files: [file] })) {
+            try {
+              await navigator.share({
+                files: [file],
+                title: 'ADR-Check Protokoll',
+                text: `Protokoll ${cleanDeliveryNum}`
+              });
+            } catch (shareErr) {
+              // Falls der User das Teilen-Fenster manuell abbricht, nichts tun
+              if (shareErr.name !== 'AbortError') {
+                console.error(shareErr);
+              }
+            }
+          } else {
+            // 2. Fallback für Standard-Browser (Android, Chrome, Firefox, PC)
+            const link = document.createElement('a');
+            const blobUrl = URL.createObjectURL(blob);
+            link.href = blobUrl;
+            link.download = fileName;
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            
+            setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
+          }
+        }, 'image/jpeg', 0.95);
 
       } catch (err) {
         alert("Fehler beim Erzeugen des Protokolls: " + err.message);
