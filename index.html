@@ -5,8 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>ADR-Check Tank & Silo nach ADR 7.5.1</title>
   
-  <!-- html2canvas Bibliothek für HD-JPG-Export -->
+  <!-- Bibliotheken für die mobile PDF-Erstellung -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 
   <style>
     :root {
@@ -369,8 +370,13 @@
     }
 
     .prot-photo-block img {
+      width: auto;
       max-width: 100%;
       height: auto;
+      max-height: 700px;
+      object-fit: contain;
+      margin-left: auto;
+      margin-right: auto;
       border: 1px solid #999;
       border-radius: 4px;
       display: block;
@@ -448,7 +454,7 @@
         </div>
       </div>
 
-      <button type="button" class="btn-submit" onclick="generateProtocolJPG()">Protokoll erzeugen</button>
+      <button type="button" class="btn-submit" onclick="generateProtocolPDF()">PDF-Protokoll erstellen</button>
 
     </form>
   </div>
@@ -595,7 +601,305 @@
       }
     }
 
-    async function generateProtocolJPG() {
+    async function waitForProtocolImages(element) {
+      const images = Array.from(element.querySelectorAll('img'))
+        .filter(img => img.getAttribute('src'));
+      await Promise.all(images.map(img => {
+        if (img.complete) return Promise.resolve();
+        return new Promise(resolve => {
+          img.addEventListener('load', resolve, { once: true });
+          img.addEventListener('error', resolve, { once: true });
+        });
+      }));
+    }
+
+    function preparePdfLayoutClone(element, contentWidth, contentHeight) {
+      const sourceWidth = Math.max(1, element.scrollWidth || element.getBoundingClientRect().width);
+      const clone = element.cloneNode(true);
+      clone.setAttribute('aria-hidden', 'true');
+      clone.style.setProperty('position', 'absolute', 'important');
+      clone.style.setProperty('left', '-100000px', 'important');
+      clone.style.setProperty('top', '0', 'important');
+      clone.style.setProperty('display', 'block', 'important');
+      clone.style.setProperty('visibility', 'visible', 'important');
+      clone.style.setProperty('width', `${sourceWidth}px`, 'important');
+      clone.style.setProperty('max-width', 'none', 'important');
+      clone.style.setProperty('height', 'auto', 'important');
+      clone.style.setProperty('max-height', 'none', 'important');
+      clone.style.setProperty('overflow', 'visible', 'important');
+      document.body.appendChild(clone);
+
+      const pageHeightCss = clone.scrollWidth * (contentHeight / contentWidth);
+      const photoSelector = '[data-pdf-photo-block], .prot-photo-block, .proto-photo-block, .proto-photos-row';
+      const explicitBlocks = Array.from(clone.querySelectorAll(photoSelector));
+      const outerBlocks = explicitBlocks.filter(node => !node.parentElement?.closest(photoSelector));
+      const standaloneImages = Array.from(clone.querySelectorAll('img')).filter(image => !image.closest(photoSelector));
+      const blocks = [...outerBlocks, ...standaloneImages].sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top);
+
+      blocks.forEach(block => {
+        const blockStyle = getComputedStyle(block);
+        if (blockStyle.display === 'none' || blockStyle.visibility === 'hidden') return;
+        let insertionTarget = block;
+        if (block.classList.contains('prot-photo-block') && block.previousElementSibling?.classList.contains('prot-photos-title')) {
+          insertionTarget = block.previousElementSibling;
+        }
+        let cloneRect = clone.getBoundingClientRect();
+        let targetRect = insertionTarget.getBoundingClientRect();
+        let blockRect = block.getBoundingClientRect();
+        let groupTop = targetRect.top - cloneRect.top;
+        let groupHeight = blockRect.bottom - targetRect.top;
+        if (groupHeight > pageHeightCss - 16) {
+          const image = block.matches('img') ? block : block.querySelector('img');
+          if (image) {
+            const imageRect = image.getBoundingClientRect();
+            const excess = groupHeight - (pageHeightCss - 16);
+            image.style.setProperty('max-height', `${Math.max(80, imageRect.height - excess - 4)}px`, 'important');
+            image.style.setProperty('width', 'auto', 'important');
+            image.style.setProperty('height', 'auto', 'important');
+            image.style.setProperty('object-fit', 'contain', 'important');
+            cloneRect = clone.getBoundingClientRect();
+            targetRect = insertionTarget.getBoundingClientRect();
+            blockRect = block.getBoundingClientRect();
+            groupTop = targetRect.top - cloneRect.top;
+            groupHeight = blockRect.bottom - targetRect.top;
+          }
+        }
+        const positionOnPage = ((groupTop % pageHeightCss) + pageHeightCss) % pageHeightCss;
+        if (positionOnPage > 8) {
+          const spacer = document.createElement('div');
+          spacer.setAttribute('aria-hidden', 'true');
+          spacer.style.setProperty('display', 'block', 'important');
+          spacer.style.setProperty('height', `${pageHeightCss - positionOnPage + 8}px`, 'important');
+          spacer.style.setProperty('min-height', '0', 'important');
+          spacer.style.setProperty('margin', '0', 'important');
+          spacer.style.setProperty('padding', '0', 'important');
+          spacer.style.setProperty('border', '0', 'important');
+          insertionTarget.parentNode.insertBefore(spacer, insertionTarget);
+        }
+      });
+      return clone;
+    }
+
+    function preparePhotoGridLayoutClone(element, contentWidth, contentHeight) {
+      const sourceWidth = Math.max(1, element.scrollWidth || element.getBoundingClientRect().width);
+      const clone = element.cloneNode(true);
+      clone.setAttribute('aria-hidden', 'true');
+      clone.style.cssText += `;position:absolute;left:-100000px;top:0;display:block;visibility:visible;width:${sourceWidth}px;max-width:none;height:auto;max-height:none;overflow:visible;`;
+      clone.style.setProperty('padding-bottom', '0', 'important');
+      clone.style.setProperty('margin-bottom', '0', 'important');
+      document.body.appendChild(clone);
+    
+      const pageHeightCss = clone.scrollWidth * (contentHeight / contentWidth);
+      const blocks = Array.from(clone.querySelectorAll(
+        '.prot-photo-block, .proto-photo-block, [data-pdf-photo-block]'
+      ));
+      const tiles = [];
+      let lastPhotoTileIndex = -1;
+
+      const createEmptyPhotoTile = captionText => {
+        const tile = document.createElement('div');
+        tile.style.cssText = 'display:flex;flex-direction:column;min-width:0;min-height:0;overflow:hidden;padding:10px;margin:0;border:1px solid #cbd5e1;border-radius:6px;background:#fff;box-sizing:border-box;';
+        const caption = document.createElement('div');
+        caption.textContent = captionText;
+        caption.style.cssText = 'font-size:15px;font-weight:700;margin:0 0 8px;color:#111827;';
+        const placeholder = document.createElement('div');
+        placeholder.textContent = 'Kein Foto aufgenommen';
+        placeholder.style.cssText = 'display:flex;align-items:center;justify-content:center;flex:1 1 auto;min-height:0;border:2px dashed #d1d5db;background:#fafafa;color:#9ca3af;font-size:16px;text-align:center;box-sizing:border-box;';
+        tile.appendChild(caption);
+        tile.appendChild(placeholder);
+        return tile;
+      };
+    
+      blocks.forEach((block, index) => {
+        const image = block.querySelector('img');
+        const hasPhoto = Boolean(image && image.getAttribute('src'));
+        const captionSource = block.querySelector('h4') ||
+          block.querySelector('.text-gray-900') ||
+          block.querySelector('.font-bold');
+        const captionText = captionSource?.textContent?.trim() || image?.alt || `Foto ${index + 1}`;
+    
+        if (hasPhoto) {
+          lastPhotoTileIndex = tiles.length;
+          const tile = document.createElement('div');
+          tile.style.cssText = 'display:flex;flex-direction:column;min-width:0;min-height:0;overflow:hidden;padding:10px;margin:0;border:1px solid #cbd5e1;border-radius:6px;background:#fff;box-sizing:border-box;';
+          const caption = document.createElement('div');
+          caption.textContent = captionText;
+          caption.style.cssText = 'font-size:15px;font-weight:700;margin:0 0 8px;color:#111827;';
+          const imageBox = document.createElement('div');
+          imageBox.style.cssText = 'display:flex;align-items:center;justify-content:center;flex:1 1 auto;min-height:0;overflow:hidden;';
+          const photo = image.cloneNode(true);
+          photo.removeAttribute('id');
+          photo.removeAttribute('class');
+          photo.style.cssText = 'width:100%;height:100%;max-width:100%;max-height:100%;object-fit:contain;display:block;margin:0;';
+          imageBox.appendChild(photo);
+          tile.appendChild(caption);
+          tile.appendChild(imageBox);
+          tiles.push(tile);
+        } else {
+          tiles.push(createEmptyPhotoTile(captionText));
+        }
+    
+        if (block.matches('.prot-photo-block, .proto-photo-block')) {
+          block.remove();
+        } else {
+          const imageHolder = image?.parentElement;
+          if (imageHolder && imageHolder !== block) imageHolder.remove();
+          else image?.remove();
+          block.removeAttribute('data-pdf-photo-block');
+        }
+      });
+
+      tiles.splice(lastPhotoTileIndex + 1);
+    
+      clone.querySelectorAll('.proto-photos-row').forEach(row => {
+        if (!row.querySelector('img')) row.remove();
+      });
+      clone.querySelectorAll('.prot-photos-title').forEach(title => {
+        if (/foto/i.test(title.textContent || '')) title.remove();
+      });
+    
+      if (!tiles.length) return clone;
+    
+      const marker = document.createElement('div');
+      marker.style.cssText = 'display:block;height:0;margin:0;padding:0;';
+      clone.appendChild(marker);
+    
+      for (let start = 0; start < tiles.length; start += 4) {
+        const chunk = tiles.slice(start, start + 4);
+        while (chunk.length < 4) {
+          chunk.push(createEmptyPhotoTile(`Foto ${start + chunk.length + 1}`));
+        }
+        const cloneRect = clone.getBoundingClientRect();
+        const markerRect = marker.getBoundingClientRect();
+        const markerTop = markerRect.top - cloneRect.top;
+        const positionOnPage = ((markerTop % pageHeightCss) + pageHeightCss) % pageHeightCss;
+        const spacerHeight = (8 - positionOnPage + pageHeightCss) % pageHeightCss;
+    
+        if (spacerHeight > 0.5) {
+          const spacer = document.createElement('div');
+          spacer.style.cssText = `display:block;height:${spacerHeight}px;min-height:0;margin:0;padding:0;border:0;`;
+          clone.insertBefore(spacer, marker);
+        }
+    
+        const page = document.createElement('section');
+        page.setAttribute('data-pdf-photo-page', '');
+        page.style.cssText = `display:flex;flex-direction:column;width:100%;height:${pageHeightCss - 16}px;box-sizing:border-box;padding:12px;margin:0;overflow:hidden;background:#fff;`;
+        const title = document.createElement('div');
+        title.textContent = `Fotodokumentation – Fotos ${start + 1}–${start + 4}`;
+        title.style.cssText = 'font-size:20px;font-weight:700;color:#E1000F;border-bottom:2px solid #e5e7eb;padding-bottom:7px;margin-bottom:10px;';
+        const grid = document.createElement('div');
+        grid.style.cssText = 'display:grid;grid-template-columns:repeat(2,minmax(0,1fr));grid-template-rows:repeat(2,minmax(0,1fr));gap:12px;flex:1 1 auto;min-height:0;overflow:hidden;';
+        chunk.forEach(tile => grid.appendChild(tile));
+        page.appendChild(title);
+        page.appendChild(grid);
+        clone.insertBefore(page, marker);
+      }
+    
+      marker.remove();
+      return clone;
+    }
+    async function createPdfBlobFromElement(element) {
+      if (!window.jspdf || !window.jspdf.jsPDF) {
+        throw new Error('Die PDF-Bibliothek konnte nicht geladen werden. Bitte prüfen Sie die Internetverbindung.');
+      }
+      const { jsPDF } = window.jspdf;
+      const pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4', compress: true });
+      const pageWidth = pdf.internal.pageSize.getWidth();
+      const pageHeight = pdf.internal.pageSize.getHeight();
+      const margin = 8;
+      const footerHeight = 6;
+      const contentWidth = pageWidth - (margin * 2);
+      const contentHeight = pageHeight - (margin * 2) - footerHeight;
+      await waitForProtocolImages(element);
+      const renderElement = preparePhotoGridLayoutClone(element, contentWidth, contentHeight);
+      let canvas;
+      try {
+        await waitForProtocolImages(renderElement);
+        const sourcePixels = Math.max(1, renderElement.scrollWidth * renderElement.scrollHeight);
+        const renderScale = Math.min(2, Math.max(1, Math.sqrt(16000000 / sourcePixels)));
+        canvas = await html2canvas(renderElement, {
+          scale: renderScale,
+          useCORS: true,
+          logging: false,
+          allowTaint: true,
+          backgroundColor: '#ffffff'
+        });
+      } finally {
+        renderElement.remove();
+      }
+      const mmPerPixel = contentWidth / canvas.width;
+      const sliceHeightPx = Math.max(1, Math.floor(contentHeight / mmPerPixel));
+      const pageCount = Math.max(1, Math.ceil((canvas.height - 2) / sliceHeightPx));
+
+      for (let pageIndex = 0; pageIndex < pageCount; pageIndex++) {
+        const sourceY = pageIndex * sliceHeightPx;
+        const currentHeight = Math.min(sliceHeightPx, canvas.height - sourceY);
+        const pageCanvas = document.createElement('canvas');
+        pageCanvas.width = canvas.width;
+        pageCanvas.height = currentHeight;
+        const context = pageCanvas.getContext('2d');
+        context.fillStyle = '#ffffff';
+        context.fillRect(0, 0, pageCanvas.width, pageCanvas.height);
+        context.drawImage(canvas, 0, sourceY, canvas.width, currentHeight, 0, 0, canvas.width, currentHeight);
+
+        if (pageIndex > 0) pdf.addPage();
+        pdf.addImage(pageCanvas.toDataURL('image/jpeg', 0.92), 'JPEG', margin, margin, contentWidth, currentHeight * mmPerPixel, undefined, 'FAST');
+        pdf.setFontSize(8);
+        pdf.setTextColor(100);
+        pdf.text(`Seite ${pageIndex + 1} von ${pageCount}`, pageWidth / 2, pageHeight - 5, { align: 'center' });
+      }
+      return pdf.output('blob');
+    }
+
+    function showPdfOpenDialog(blobUrl, fileName) {
+      const oldDialog = document.getElementById('pdf-open-dialog');
+      if (oldDialog) oldDialog.remove();
+      const dialog = document.createElement('div');
+      dialog.id = 'pdf-open-dialog';
+      dialog.style.cssText = 'position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,.78);display:flex;align-items:center;justify-content:center;padding:20px;';
+      dialog.innerHTML = `
+        <div style="width:min(440px,100%);background:#fff;border-radius:14px;padding:22px;text-align:center;color:#222;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;">
+          <h2 style="margin:0 0 10px;color:#E1000F;">PDF wurde erstellt</h2>
+          <p style="margin:0 0 18px;line-height:1.45;">Öffnen Sie die PDF und wählen Sie anschließend „Teilen“ bzw. „In Dateien sichern“.</p>
+          <a href="${blobUrl}" target="_blank" download="${fileName}" style="display:block;background:#E1000F;color:#fff;text-decoration:none;padding:14px;border-radius:9px;font-weight:700;margin-bottom:10px;">PDF öffnen / sichern</a>
+          <button type="button" style="width:100%;padding:12px;border:0;border-radius:9px;background:#4b5563;color:#fff;font-weight:700;" onclick="this.closest('#pdf-open-dialog').remove()">Schließen</button>
+        </div>`;
+      document.body.appendChild(dialog);
+      setTimeout(() => URL.revokeObjectURL(blobUrl), 300000);
+    }
+
+    async function deliverPdf(blob, fileName, title) {
+      const isMobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent) || navigator.maxTouchPoints > 1;
+      const isIOS = /iPhone|iPad|iPod/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+      let file = null;
+      try { file = new File([blob], fileName, { type: 'application/pdf' }); } catch (_) {}
+
+      if (isMobile && file && navigator.share && navigator.canShare) {
+        try {
+          if (navigator.canShare({ files: [file] })) {
+            await navigator.share({ files: [file], title });
+            return;
+          }
+        } catch (shareError) {
+          if (shareError.name === 'AbortError') return;
+        }
+      }
+
+      const blobUrl = URL.createObjectURL(blob);
+      if (isIOS) {
+        showPdfOpenDialog(blobUrl, fileName);
+        return;
+      }
+      const link = document.createElement('a');
+      link.href = blobUrl;
+      link.download = fileName;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(blobUrl), 60000);
+    }
+
+    async function generateProtocolPDF() {
       const name = document.getElementById('employeeName').value.trim();
       const deliveryNum = document.getElementById('deliveryNumber').value.trim();
 
@@ -675,57 +979,21 @@
       document.getElementById('protImgTrailer').src = imgTrailer || '';
 
       const targetContainer = document.getElementById('protocol-container');
+      const exportButton = document.querySelector('button[onclick="generateProtocolPDF()"]');
+      const originalButtonText = exportButton.textContent;
+      exportButton.disabled = true;
+      exportButton.textContent = 'PDF wird erstellt …';
 
       try {
-        const canvas = await html2canvas(targetContainer, {
-          scale: 2,
-          useCORS: true,
-          logging: false,
-          allowTaint: true
-        });
-
         const cleanDeliveryNum = deliveryNum.replace(/[/\\?%*:|"<>]/g, '-').trim();
-        const fileName = `${cleanDeliveryNum}.jpg`;
-
-        // Optimierte iOS- / Safari-kompatible Speichermethode via Blob
-        canvas.toBlob(async function(blob) {
-          if (!blob) {
-            alert('Fehler bei der Bilderstellung.');
-            return;
-          }
-
-          const file = new File([blob], fileName, { type: 'image/jpeg' });
-
-          // 1. iOS / Web Share API (native Teilen-Funktion auf iPhones/iPads)
-          if (navigator.canShare && navigator.canShare({ files: [file] })) {
-            try {
-              await navigator.share({
-                files: [file],
-                title: 'ADR-Check Protokoll',
-                text: `Protokoll ${cleanDeliveryNum}`
-              });
-            } catch (shareErr) {
-              // Falls der User das Teilen-Fenster manuell abbricht, nichts tun
-              if (shareErr.name !== 'AbortError') {
-                console.error(shareErr);
-              }
-            }
-          } else {
-            // 2. Fallback für Standard-Browser (Android, Chrome, Firefox, PC)
-            const link = document.createElement('a');
-            const blobUrl = URL.createObjectURL(blob);
-            link.href = blobUrl;
-            link.download = fileName;
-            document.body.appendChild(link);
-            link.click();
-            document.body.removeChild(link);
-            
-            setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
-          }
-        }, 'image/jpeg', 0.95);
-
+        const fileName = `${cleanDeliveryNum || 'ADR-Tank-Silo'}.pdf`;
+        const pdfBlob = await createPdfBlobFromElement(targetContainer);
+        await deliverPdf(pdfBlob, fileName, 'ADR-Check Tank und Silo');
       } catch (err) {
         alert("Fehler beim Erzeugen des Protokolls: " + err.message);
+      } finally {
+        exportButton.disabled = false;
+        exportButton.textContent = originalButtonText;
       }
     }
   </script>
